@@ -1,6 +1,6 @@
 use yew::prelude::*;
 use wasm_bindgen::prelude::*;
-use web_sys::{HtmlInputElement, File, Event, EventTarget};
+use web_sys::{HtmlInputElement, File, Event, EventTarget, DragEvent};
 use gloo::file::callbacks::FileReader;
 use gloo::file::File as GlooFile;
 use rust_xlsxwriter::*;
@@ -138,7 +138,28 @@ impl Component for App {
 
                 <div class="bg-white shadow-md rounded-lg p-6 mb-6">
                     <div class="flex items-center justify-center w-full">
-                        <label for="dropzone-file" class="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100">
+                        <label for="dropzone-file" class="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100"
+                            ondragover={Callback::from(|e: DragEvent| {
+                                e.prevent_default();
+                            })}
+                            ondragenter={Callback::from(|e: DragEvent| {
+                                e.prevent_default();
+                            })}
+                            ondrop={ctx.link().callback(|e: DragEvent| {
+                                e.prevent_default();
+                                let mut files = Vec::new();
+                                if let Some(data_transfer) = e.data_transfer() {
+                                    if let Some(file_list) = data_transfer.files() {
+                                        for i in 0..file_list.length() {
+                                            if let Some(file) = file_list.item(i) {
+                                                files.push(file);
+                                            }
+                                        }
+                                    }
+                                }
+                                Msg::FileSelected(files)
+                            })}
+                        >
                             <div class="flex flex-col items-center justify-center pt-5 pb-6">
                                 <p class="mb-2 text-sm text-gray-500"><span class="font-semibold">{"Click to upload"}</span>{" or drag and drop"}</p>
                                 <p class="text-xs text-gray-500">{"PPTX files only"}</p>

@@ -29,6 +29,8 @@ web-sys = { version = "0.3", features = [
     "HtmlAnchorElement",
     "EventTarget",
     "Event",
+    "DragEvent",
+    "DataTransfer",
     "console",
 ] }
 chrono = { version = "0.4.43", features = ["wasmbind"] }
