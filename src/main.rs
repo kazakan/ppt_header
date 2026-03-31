@@ -1,11 +1,12 @@
 use yew::prelude::*;
 use wasm_bindgen::prelude::*;
-use web_sys::{HtmlInputElement, File, Event, EventTarget, DragEvent};
+use web_sys::{HtmlInputElement, File, Event, DragEvent};
 use gloo::file::callbacks::FileReader;
 use gloo::file::File as GlooFile;
 use rust_xlsxwriter::*;
 
 mod pptx_parser;
+mod pdf_parser;
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct SlideData {
@@ -55,6 +56,15 @@ impl Component for App {
                 if let Some(file) = files.first() {
                     let file = file.clone();
                     let file_name = file.name();
+                    let lower = file_name.to_ascii_lowercase();
+                    if !lower.ends_with(".pptx") && !lower.ends_with(".pdf") {
+                        self.error_msg = Some("Please upload a .pptx or .pdf file".to_string());
+                        self.file_name = Some(file_name);
+                        self.is_loading = false;
+                        self.slides.clear();
+                        return true;
+                    }
+
                     self.file_name = Some(file_name.clone());
                     self.is_loading = true;
                     self.error_msg = None;
@@ -73,14 +83,21 @@ impl Component for App {
                 }
                 true
             }
-            Msg::FileLoaded(_name, data) => {
-                // Here we will call the parser
+            Msg::FileLoaded(name, data) => {
                 let link = ctx.link().clone();
+                let lower = name.to_ascii_lowercase();
                 wasm_bindgen_futures::spawn_local(async move {
-                   match pptx_parser::parse_pptx(&data).await {
-                       Ok(slides) => link.send_message(Msg::ParseFinished(slides)),
-                       Err(e) => link.send_message(Msg::Error(format!("Failed to parse PPTX: {}", e))),
-                   }
+                    if lower.ends_with(".pdf") {
+                        match pdf_parser::parse_pdf(&data).await {
+                            Ok(slides) => link.send_message(Msg::ParseFinished(slides)),
+                            Err(e) => link.send_message(Msg::Error(format!("Failed to parse PDF: {}", e))),
+                        }
+                    } else {
+                        match pptx_parser::parse_pptx(&data).await {
+                            Ok(slides) => link.send_message(Msg::ParseFinished(slides)),
+                            Err(e) => link.send_message(Msg::Error(format!("Failed to parse PPTX: {}", e))),
+                        }
+                    }
                 });
                 true
             }
@@ -132,8 +149,8 @@ impl Component for App {
         html! {
             <div class="container mx-auto p-8 max-w-4xl">
                 <header class="mb-8 text-center">
-                    <h1 class="text-4xl font-bold text-gray-800 mb-2">{"PPTX Header Extractor"}</h1>
-                    <p class="text-gray-600">{"Extract slide titles and export to CSV or Excel"}</p>
+                    <h1 class="text-4xl font-bold text-gray-800 mb-2">{"Slide Title Extractor"}</h1>
+                    <p class="text-gray-600">{"Extract titles from PPTX slides or PDF pages and export to CSV or Excel"}</p>
                 </header>
 
                 <div class="bg-white shadow-md rounded-lg p-6 mb-6">
@@ -162,9 +179,9 @@ impl Component for App {
                         >
                             <div class="flex flex-col items-center justify-center pt-5 pb-6">
                                 <p class="mb-2 text-sm text-gray-500"><span class="font-semibold">{"Click to upload"}</span>{" or drag and drop"}</p>
-                                <p class="text-xs text-gray-500">{"PPTX files only"}</p>
+                                <p class="text-xs text-gray-500">{"PPTX and PDF files"}</p>
                             </div>
-                            <input id="dropzone-file" type="file" class="hidden" accept=".pptx" 
+                            <input id="dropzone-file" type="file" class="hidden" accept=".pptx,.pdf,application/pdf" 
                                 onchange={ctx.link().callback(|e: Event| {
                                     let input: HtmlInputElement = e.target().unwrap().dyn_into().unwrap();
                                     let mut files = Vec::new();
@@ -216,7 +233,7 @@ impl Component for App {
                                             </div>
                                         </th>
                                         <th scope="col" class="px-6 py-3">{"Page"}</th>
-                                        <th scope="col" class="px-6 py-3">{"Slide Title"}</th>
+                                        <th scope="col" class="px-6 py-3">{"Title"}</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -247,7 +264,7 @@ impl Component for App {
 
 impl App {
     fn generate_csv(&self) -> String {
-        let mut csv = String::from("\u{FEFF}Page,SlideTitle\n");
+        let mut csv = String::from("\u{FEFF}Page,Title\n");
         for slide in &self.slides {
             if slide.selected {
                 let title = slide.title.replace("\"", "\"\"");
@@ -263,7 +280,7 @@ impl App {
 
         // Write header
         worksheet.write_string(0, 0, "Page")?;
-        worksheet.write_string(0, 1, "SlideTitle")?;
+        worksheet.write_string(0, 1, "Title")?;
 
         let mut row = 1;
         for slide in &self.slides {
@@ -283,9 +300,11 @@ fn download_file(filename: &str, content: &[u8], mime_type: &str) {
     let document = window.document().unwrap();
     // Create a Uint8Array from slice to pass to Blob
     let array = js_sys::Uint8Array::from(content);
+    let blob_options = web_sys::BlobPropertyBag::new();
+    blob_options.set_type(mime_type);
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(
-        &js_sys::Array::of1(&array), 
-        web_sys::BlobPropertyBag::new().type_(mime_type)
+        &js_sys::Array::of1(&array),
+        &blob_options,
     ).unwrap();
     
     let url = web_sys::Url::create_object_url_with_blob(&blob).unwrap();
