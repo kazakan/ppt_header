@@ -1,123 +1,59 @@
-use serde::Deserialize;
-use wasm_bindgen::prelude::*;
+use std::collections::HashMap;
+
+use lopdf::Document;
 
 use crate::SlideData;
 
-#[derive(Debug, Deserialize)]
-struct PdfPageTitle {
-    page: usize,
-    title: String,
-}
-
-#[wasm_bindgen(inline_js = "
-export async function parsePdfTitlesFromBytes(bytes) {
-  if (!globalThis.pdfjsLib) {
-    throw new Error('PDF.js is not loaded.');
-  }
-
-  const loadingTask = globalThis.pdfjsLib.getDocument({ data: bytes });
-  const pdf = await loadingTask.promise;
-
-  const bookmarkTitles = new Map();
-
-  async function destinationToPage(dest) {
-    if (!dest) {
-      return null;
-    }
-
-    let resolved = dest;
-    if (typeof dest === 'string') {
-      resolved = await pdf.getDestination(dest);
-    }
-    if (!resolved || !resolved[0]) {
-      return null;
-    }
-
-    const pageRef = resolved[0];
-    const pageIndex = await pdf.getPageIndex(pageRef);
-    return pageIndex + 1;
-  }
-
-  async function walkOutline(items) {
-    if (!Array.isArray(items)) {
-      return;
-    }
-
-    for (const item of items) {
-      const title = (item.title || '').trim();
-      if (title) {
-        const page = await destinationToPage(item.dest);
-        if (page && !bookmarkTitles.has(page)) {
-          bookmarkTitles.set(page, title);
-        }
-      }
-      if (item.items && item.items.length > 0) {
-        await walkOutline(item.items);
-      }
-    }
-  }
-
-  const outline = await pdf.getOutline();
-  await walkOutline(outline || []);
-
-  const result = [];
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    let title = bookmarkTitles.get(pageNumber);
-
-    if (!title) {
-      const page = await pdf.getPage(pageNumber);
-      const textContent = await page.getTextContent();
-
-      for (const item of textContent.items) {
-        const text = (item.str || '').trim();
-        if (text) {
-          title = text;
-          break;
-        }
-      }
-    }
-
-    if (!title) {
-      title = `Page ${pageNumber}`;
-    }
-
-    result.push({ page: pageNumber, title });
-  }
-
-  return JSON.stringify(result);
-}
-")]
-extern "C" {
-    #[wasm_bindgen(catch, js_name = parsePdfTitlesFromBytes)]
-    async fn parse_pdf_titles_from_bytes(bytes: js_sys::Uint8Array)
-        -> Result<JsValue, JsValue>;
-}
-
 pub async fn parse_pdf(data: &[u8]) -> Result<Vec<SlideData>, String> {
-    let bytes = js_sys::Uint8Array::from(data);
-    let value = parse_pdf_titles_from_bytes(bytes)
-        .await
-        .map_err(js_error_to_string)?;
+    let doc = Document::load_mem(data)
+        .map_err(|e| format!("Failed to read PDF: {e}"))?;
 
-    let json = value
-        .as_string()
-        .ok_or_else(|| "PDF parser returned an unexpected result".to_string())?;
+    let pages = doc.get_pages();
+    if pages.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    let pages: Vec<PdfPageTitle> = serde_json::from_str(&json)
-        .map_err(|e| format!("Failed to decode PDF extraction output: {e}"))?;
+    let bookmark_titles = extract_bookmark_titles(&doc);
+    let mut output = Vec::with_capacity(pages.len());
 
-    Ok(pages
-        .into_iter()
-        .map(|p| SlideData {
-            page: p.page,
-            title: p.title,
+    for (idx, (page_number, _)) in pages.iter().enumerate() {
+        let page_index = *page_number as usize;
+        let title = bookmark_titles
+            .get(&page_index)
+            .cloned()
+            .or_else(|| extract_page_title(&doc, *page_number))
+            .unwrap_or_else(|| format!("Page {}", idx + 1));
+
+        output.push(SlideData {
+            page: idx + 1,
+            title,
             selected: true,
-        })
-        .collect())
+        });
+    }
+
+    Ok(output)
 }
 
-fn js_error_to_string(err: JsValue) -> String {
-    err.as_string()
-        .or_else(|| js_sys::JSON::stringify(&err).ok().and_then(|v| v.as_string()))
-        .unwrap_or_else(|| "Unknown JavaScript error".to_string())
+fn extract_bookmark_titles(doc: &Document) -> HashMap<usize, String> {
+    let mut by_page = HashMap::new();
+
+    if let Ok(toc) = doc.get_toc() {
+        for item in toc.toc {
+            let title = item.title.trim();
+            if !title.is_empty() {
+                by_page.entry(item.page).or_insert_with(|| title.to_string());
+            }
+        }
+    }
+
+    by_page
+}
+
+fn extract_page_title(doc: &Document, page_number: u32) -> Option<String> {
+    let text = doc.extract_text(&[page_number]).ok()?;
+
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
 }
